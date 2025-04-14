@@ -7,6 +7,7 @@ var (
 	JUPITER_DCA_PROGRAM_ID = solana.MustPublicKeyFromBase58("DCAK36VfExkPdAkYUQg6ewgxyinvcEyPLyHjRbmveKFw")
 	PUMP_FUN_PROGRAM_ID    = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 	PHOENIX_PROGRAM_ID     = solana.MustPublicKeyFromBase58("PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY") // not supported yet
+	PUMP_SWAP_PROGRAM_ID   = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA") //newly added
 
 	// Trading Bots
 	BANANA_GUN_PROGRAM_ID = solana.MustPublicKeyFromBase58("BANANAjs7FJiPQqJTGFzkZJndT9o7UmKiYYGaJz6frGu")
@@ -31,12 +32,13 @@ var (
 type SwapType string
 
 const (
-	PUMP_FUN SwapType = "PumpFun"
-	JUPITER  SwapType = "Jupiter"
-	RAYDIUM  SwapType = "Raydium"
-	OKX      SwapType = "OKX"
-	ORCA     SwapType = "Orca"
-	METEORA  SwapType = "Meteora"
-	MOONSHOT SwapType = "Moonshot"
-	UNKNOWN  SwapType = "Unknown"
+	PUMP_FUN  SwapType = "PumpFun"
+	PUMP_SWAP SwapType = "pumpswap" //newly added
+	JUPITER   SwapType = "Jupiter"
+	RAYDIUM   SwapType = "Raydium"
+	OKX       SwapType = "OKX"
+	ORCA      SwapType = "Orca"
+	METEORA   SwapType = "Meteora"
+	MOONSHOT  SwapType = "Moonshot"
+	UNKNOWN   SwapType = "Unknown"
 )

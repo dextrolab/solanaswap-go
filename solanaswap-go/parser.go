@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	PROTOCOL_RAYDIUM = "raydium"
-	PROTOCOL_ORCA    = "orca"
-	PROTOCOL_METEORA = "meteora"
-	PROTOCOL_PUMPFUN = "pumpfun"
+	PROTOCOL_RAYDIUM  = "raydium"
+	PROTOCOL_ORCA     = "orca"
+	PROTOCOL_METEORA  = "meteora"
+	PROTOCOL_PUMPFUN  = "pumpfun"
+	PROTOCOL_PUMPSWAP = "pumpswap"
 )
 
 type TokenTransfer struct {
@@ -56,6 +57,14 @@ func NewTransactionParserFromTransaction(tx *solana.Transaction, txMeta *rpc.Tra
 		txInfo:         tx,
 		allAccountKeys: allAccountKeys,
 		Log:            log,
+	}
+
+	// testing: Log if PumpSwap is detected
+	for _, key := range allAccountKeys {
+		if key.Equals(PUMP_SWAP_PROGRAM_ID) {
+			parser.Log.Infof("Detected PumpSwap transaction with program ID: %s", PUMP_SWAP_PROGRAM_ID)
+			// break
+		}
 	}
 
 	if err := parser.extractSPLTokenInfo(); err != nil {
@@ -120,6 +129,8 @@ func (p *Parser) ParseTransaction() ([]SwapData, error) {
 		case progID.Equals(PUMP_FUN_PROGRAM_ID) ||
 			progID.Equals(solana.MustPublicKeyFromBase58("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW")):
 			parsedSwaps = append(parsedSwaps, p.processPumpfunSwaps(i)...)
+		case progID.Equals(PUMP_SWAP_PROGRAM_ID):
+			parsedSwaps = append(parsedSwaps, p.processPumpSwapSwaps(i)...) // New handler for PumpSwap
 		}
 	}
 
@@ -158,6 +169,7 @@ func (p *Parser) ProcessSwapData(swapDatas []SwapData) (*SwapInfo, error) {
 
 	jupiterSwaps := make([]SwapData, 0)
 	pumpfunSwaps := make([]SwapData, 0)
+	pumpswapSwaps := make([]SwapData, 0) // newly added
 	otherSwaps := make([]SwapData, 0)
 
 	for _, swapData := range swapDatas {
@@ -166,6 +178,8 @@ func (p *Parser) ProcessSwapData(swapDatas []SwapData) (*SwapInfo, error) {
 			jupiterSwaps = append(jupiterSwaps, swapData)
 		case PUMP_FUN:
 			pumpfunSwaps = append(pumpfunSwaps, swapData)
+		case PUMP_SWAP:
+			pumpswapSwaps = append(pumpswapSwaps, swapData)
 		default:
 			otherSwaps = append(otherSwaps, swapData)
 		}
@@ -208,6 +222,44 @@ func (p *Parser) ProcessSwapData(swapDatas []SwapData) (*SwapInfo, error) {
 		swapInfo.AMMs = append(swapInfo.AMMs, string(pumpfunSwaps[0].Type))
 		swapInfo.Timestamp = time.Unix(int64(event.Timestamp), 0)
 		return swapInfo, nil
+	}
+
+	//newly added
+	if len(pumpswapSwaps) > 0 {
+		inputAmounts := make(map[string]uint64)
+		inputDecimals := make(map[string]uint8)
+		outputAmounts := make(map[string]uint64)
+		outputDecimals := make(map[string]uint8)
+	
+		for _, swap := range pumpswapSwaps {
+			switch data := swap.Data.(type) {
+			case *InputTransfer:
+				mint := data.Mint
+				inputAmounts[mint] += data.Info.Amount
+				inputDecimals[mint] = data.Decimals
+			case *OutputTransfer:
+				mint := data.Mint
+				outputAmounts[mint] += data.Info.Amount
+				outputDecimals[mint] = data.Decimals
+			}
+		}
+	
+		if len(inputAmounts) == 1 && len(outputAmounts) == 1 {
+			for mint, amount := range inputAmounts {
+				swapInfo.TokenInMint = solana.MustPublicKeyFromBase58(mint)
+				swapInfo.TokenInAmount = amount
+				swapInfo.TokenInDecimals = inputDecimals[mint]
+			}
+			for mint, amount := range outputAmounts {
+				swapInfo.TokenOutMint = solana.MustPublicKeyFromBase58(mint)
+				swapInfo.TokenOutAmount = amount
+				swapInfo.TokenOutDecimals = outputDecimals[mint]
+			}
+			swapInfo.AMMs = append(swapInfo.AMMs, string(PUMP_SWAP))
+			swapInfo.Timestamp = time.Now() // Update if logs provide timestamp
+			return swapInfo, nil
+		}
+		return nil, fmt.Errorf("PumpSwap swap has %d input mints and %d output mints; expected 1 each", len(inputAmounts), len(outputAmounts))
 	}
 
 	if len(otherSwaps) > 0 {
