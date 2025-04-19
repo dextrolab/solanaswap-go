@@ -1,9 +1,7 @@
 package solanaswapgo
 
 import (
-	"encoding/binary"
-
-	"github.com/gagliardetto/solana-go"
+	"strconv"
 )
 
 type InputTransfer struct {
@@ -16,75 +14,135 @@ type OutputTransfer struct {
 
 func (p *Parser) processPumpSwapSwaps(instructionIndex int) []SwapData {
 	var swaps []SwapData
-
 	innerInstructions := p.getInnerInstructions(instructionIndex)
+
 	if len(innerInstructions) == 0 {
-		p.Log.Warnf("No inner instructions found for PumpSwap swap at index %d", instructionIndex)
 		return swaps
 	}
 
-	// Assume user is the fee payer
 	userAccount := p.allAccountKeys[0]
 
-	// Map token account keys to their owners
-	tokenAccountOwners := make(map[solana.PublicKey]string)
+	preBalances := make(map[string]uint64)
+	postBalances := make(map[string]uint64)
+	mintDecimals := make(map[string]uint8)
+
 	for _, balance := range p.txMeta.PreTokenBalances {
-		accountKey := p.allAccountKeys[balance.AccountIndex]
-		tokenAccountOwners[accountKey] = balance.Owner.String()
-	}
+		if int(balance.AccountIndex) >= len(p.allAccountKeys) || balance.Owner == nil {
+			continue
+		}
 
-	for _, inner := range innerInstructions {
-		progID := p.allAccountKeys[inner.ProgramIDIndex]
-		if progID.Equals(solana.TokenProgramID) && len(inner.Data) >= 12 && inner.Data[0] == 3 { // TransferChecked
-			// Accounts: [source, mint, destination, owner, ...]
-			sourceKey := p.allAccountKeys[inner.Accounts[0]]
-			destinationKey := p.allAccountKeys[inner.Accounts[2]]
-			mintKey := p.allAccountKeys[inner.Accounts[1]].String()
-			amount := binary.LittleEndian.Uint64(inner.Data[4:12])
-
-			decimals, ok := p.splDecimalsMap[mintKey]
-			if !ok {
-				p.Log.Warnf("Decimals not found for mint %s", mintKey)
-				continue
-			}
-
-			sourceOwner, sourceOk := tokenAccountOwners[sourceKey]
-			destOwner, destOk := tokenAccountOwners[destinationKey]
-			if !sourceOk || !destOk {
-				p.Log.Debugf("Owner info missing for transfer accounts %s or %s", sourceKey, destinationKey)
-				continue
-			}
-
-			if sourceOwner == userAccount.String() && destOwner != userAccount.String() {
-				// Input: user -> DEX
-				swaps = append(swaps, SwapData{
-					Type: PUMP_SWAP,
-					Data: &InputTransfer{
-						TransferData: TransferData{
-							Mint:     mintKey,
-							Info:     TransferInfo{Amount: amount},
-							Decimals: decimals,
-						},
-					},
-				})
-			} else if sourceOwner != userAccount.String() && destOwner == userAccount.String() {
-				// Output: DEX -> user
-				swaps = append(swaps, SwapData{
-					Type: PUMP_SWAP,
-					Data: &OutputTransfer{
-						TransferData: TransferData{
-							Mint:     mintKey,
-							Info:     TransferInfo{Amount: amount},
-							Decimals: decimals,
-						},
-					},
-				})
+		if balance.Owner.String() == userAccount.String() {
+			amt, err := strconv.ParseUint(balance.UiTokenAmount.Amount, 10, 64)
+			if err == nil {
+				key := balance.Mint.String()
+				preBalances[key] = amt
+				mintDecimals[key] = uint8(balance.UiTokenAmount.Decimals)
 			}
 		}
 	}
 
-	if len(swaps) == 0 {
-		p.Log.Warnf("No valid PumpSwap swap transfers extracted at index %d", instructionIndex)
+	for _, balance := range p.txMeta.PostTokenBalances {
+		if int(balance.AccountIndex) >= len(p.allAccountKeys) || balance.Owner == nil {
+			continue
+		}
+
+		if balance.Owner.String() == userAccount.String() {
+			amt, err := strconv.ParseUint(balance.UiTokenAmount.Amount, 10, 64)
+			if err == nil {
+				key := balance.Mint.String()
+				postBalances[key] = amt
+				mintDecimals[key] = uint8(balance.UiTokenAmount.Decimals)
+			}
+		}
 	}
+
+	if len(p.txMeta.PreBalances) > 0 && len(p.txMeta.PostBalances) > 0 {
+		userPreBalance := p.txMeta.PreBalances[0]
+		userPostBalance := p.txMeta.PostBalances[0]
+
+		txFee := uint64(10000)
+
+		if userPreBalance > userPostBalance+txFee {
+			solAmount := userPreBalance - userPostBalance - txFee
+
+			swaps = append(swaps, SwapData{
+				Type: PUMP_SWAP,
+				Data: &InputTransfer{
+					TransferData: TransferData{
+						Mint:     NATIVE_SOL_MINT_PROGRAM_ID.String(),
+						Info:     TransferInfo{Amount: solAmount},
+						Decimals: 9,
+					},
+				},
+			})
+		} else if userPostBalance > userPreBalance {
+			solAmount := userPostBalance - userPreBalance
+
+			swaps = append(swaps, SwapData{
+				Type: PUMP_SWAP,
+				Data: &OutputTransfer{
+					TransferData: TransferData{
+						Mint:     NATIVE_SOL_MINT_PROGRAM_ID.String(),
+						Info:     TransferInfo{Amount: solAmount},
+						Decimals: 9,
+					},
+				},
+			})
+		}
+	}
+
+	for mint, preBal := range preBalances {
+		postBal, exists := postBalances[mint]
+
+		if exists && preBal > postBal {
+			amount := preBal - postBal
+			decimals := mintDecimals[mint]
+
+			swaps = append(swaps, SwapData{
+				Type: PUMP_SWAP,
+				Data: &InputTransfer{
+					TransferData: TransferData{
+						Mint:     mint,
+						Info:     TransferInfo{Amount: amount},
+						Decimals: decimals,
+					},
+				},
+			})
+		}
+	}
+
+	for mint, postBal := range postBalances {
+		preBal, exists := preBalances[mint]
+
+		if !exists {
+			decimals := mintDecimals[mint]
+
+			swaps = append(swaps, SwapData{
+				Type: PUMP_SWAP,
+				Data: &OutputTransfer{
+					TransferData: TransferData{
+						Mint:     mint,
+						Info:     TransferInfo{Amount: postBal},
+						Decimals: decimals,
+					},
+				},
+			})
+		} else if postBal > preBal {
+			amount := postBal - preBal
+			decimals := mintDecimals[mint]
+
+			swaps = append(swaps, SwapData{
+				Type: PUMP_SWAP,
+				Data: &OutputTransfer{
+					TransferData: TransferData{
+						Mint:     mint,
+						Info:     TransferInfo{Amount: amount},
+						Decimals: decimals,
+					},
+				},
+			})
+		}
+	}
+
 	return swaps
 }

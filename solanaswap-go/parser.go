@@ -59,14 +59,6 @@ func NewTransactionParserFromTransaction(tx *solana.Transaction, txMeta *rpc.Tra
 		Log:            log,
 	}
 
-	// testing: Log if PumpSwap is detected
-	for _, key := range allAccountKeys {
-		if key.Equals(PUMP_SWAP_PROGRAM_ID) {
-			parser.Log.Infof("Detected PumpSwap transaction with program ID: %s", PUMP_SWAP_PROGRAM_ID)
-			// break
-		}
-	}
-
 	if err := parser.extractSPLTokenInfo(); err != nil {
 		return nil, fmt.Errorf("failed to extract SPL Token Addresses: %w", err)
 	}
@@ -169,7 +161,7 @@ func (p *Parser) ProcessSwapData(swapDatas []SwapData) (*SwapInfo, error) {
 
 	jupiterSwaps := make([]SwapData, 0)
 	pumpfunSwaps := make([]SwapData, 0)
-	pumpswapSwaps := make([]SwapData, 0) // newly added
+	pumpswapSwaps := make([]SwapData, 0)
 	otherSwaps := make([]SwapData, 0)
 
 	for _, swapData := range swapDatas {
@@ -224,13 +216,12 @@ func (p *Parser) ProcessSwapData(swapDatas []SwapData) (*SwapInfo, error) {
 		return swapInfo, nil
 	}
 
-	//newly added
 	if len(pumpswapSwaps) > 0 {
 		inputAmounts := make(map[string]uint64)
 		inputDecimals := make(map[string]uint8)
 		outputAmounts := make(map[string]uint64)
 		outputDecimals := make(map[string]uint8)
-	
+
 		for _, swap := range pumpswapSwaps {
 			switch data := swap.Data.(type) {
 			case *InputTransfer:
@@ -243,23 +234,52 @@ func (p *Parser) ProcessSwapData(swapDatas []SwapData) (*SwapInfo, error) {
 				outputDecimals[mint] = data.Decimals
 			}
 		}
-	
+
+		if len(inputAmounts) == 0 && len(outputAmounts) == 1 {
+			solKey := NATIVE_SOL_MINT_PROGRAM_ID.String()
+			if len(p.txMeta.PreBalances) > 0 && len(p.txMeta.PostBalances) > 0 {
+				userPreBalance := p.txMeta.PreBalances[0]
+				userPostBalance := p.txMeta.PostBalances[0]
+				txFee := uint64(10000)
+
+				if userPreBalance > userPostBalance+txFee {
+					inputAmounts[solKey] = userPreBalance - userPostBalance - txFee
+					inputDecimals[solKey] = 9
+				}
+			}
+		} else if len(inputAmounts) == 1 && len(outputAmounts) == 0 {
+			solKey := NATIVE_SOL_MINT_PROGRAM_ID.String()
+			if len(p.txMeta.PreBalances) > 0 && len(p.txMeta.PostBalances) > 0 {
+				userPreBalance := p.txMeta.PreBalances[0]
+				userPostBalance := p.txMeta.PostBalances[0]
+
+				if userPostBalance > userPreBalance {
+					outputAmounts[solKey] = userPostBalance - userPreBalance
+					outputDecimals[solKey] = 9
+				}
+			}
+		}
+
 		if len(inputAmounts) == 1 && len(outputAmounts) == 1 {
 			for mint, amount := range inputAmounts {
 				swapInfo.TokenInMint = solana.MustPublicKeyFromBase58(mint)
 				swapInfo.TokenInAmount = amount
 				swapInfo.TokenInDecimals = inputDecimals[mint]
 			}
+
 			for mint, amount := range outputAmounts {
 				swapInfo.TokenOutMint = solana.MustPublicKeyFromBase58(mint)
 				swapInfo.TokenOutAmount = amount
 				swapInfo.TokenOutDecimals = outputDecimals[mint]
 			}
+
 			swapInfo.AMMs = append(swapInfo.AMMs, string(PUMP_SWAP))
-			swapInfo.Timestamp = time.Now() // Update if logs provide timestamp
+			swapInfo.Timestamp = time.Now()
 			return swapInfo, nil
 		}
-		return nil, fmt.Errorf("PumpSwap swap has %d input mints and %d output mints; expected 1 each", len(inputAmounts), len(outputAmounts))
+
+		return nil, fmt.Errorf("PumpSwap: invalid swap structure (%d inputs, %d outputs)",
+			len(inputAmounts), len(outputAmounts))
 	}
 
 	if len(otherSwaps) > 0 {
